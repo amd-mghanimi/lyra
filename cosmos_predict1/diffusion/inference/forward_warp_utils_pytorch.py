@@ -25,9 +25,10 @@ except ImportError:
 
 _warp_initialized = False
 _ray_triangle_intersection_func = None
+_ray_mesh_intersection_func = None
 
 def _init_warp():
-    global _warp_initialized, _ray_triangle_intersection_func
+    global _warp_initialized, _ray_triangle_intersection_func, _ray_mesh_intersection_func
     
     if not _warp_initialized:
         print(f"Initializing Warp library (local_rank {os.getenv('LOCAL_RANK')})...")
@@ -35,15 +36,25 @@ def _init_warp():
         _warp_initialized = True
         print(f"Warp library initialized successfully (local_rank {os.getenv('LOCAL_RANK')})")
     
-    if _ray_triangle_intersection_func is None:
+    # if _ray_triangle_intersection_func is None:
+    #     try:
+    #         from .ray_triangle_intersection_warp import ray_triangle_intersection_warp
+    #         _ray_triangle_intersection_func = ray_triangle_intersection_warp
+    #         print(f"Warp: ray_triangle_intersection_warp kernel loaded (local_rank {os.getenv('LOCAL_RANK')})")
+    #     except ImportError:
+    #         from ray_triangle_intersection_warp import ray_triangle_intersection_warp
+    #         _ray_triangle_intersection_func = ray_triangle_intersection_warp
+    #         print(f"Warp: ray_triangle_intersection_warp kernel loaded (local_rank {os.getenv('LOCAL_RANK')})")
+
+    if _ray_mesh_intersection_func is None:
         try:
-            from .ray_triangle_intersection_warp import ray_triangle_intersection_warp
-            _ray_triangle_intersection_func = ray_triangle_intersection_warp
-            print(f"Warp: ray_triangle_intersection_warp kernel loaded (local_rank {os.getenv('LOCAL_RANK')})")
+            from .ray_triangle_intersection_warp import ray_mesh_intersection_warp
+            _ray_mesh_intersection_func = ray_mesh_intersection_warp
+            print(f"Warp: ray_mesh_intersection_warp kernel loaded (local_rank {os.getenv('LOCAL_RANK')})")
         except ImportError:
-            from ray_triangle_intersection_warp import ray_triangle_intersection_warp
-            _ray_triangle_intersection_func = ray_triangle_intersection_warp
-            print(f"Warp: ray_triangle_intersection_warp kernel loaded (local_rank {os.getenv('LOCAL_RANK')})")
+            from ray_triangle_intersection_warp import ray_mesh_intersection_warp
+            _ray_mesh_intersection_func = ray_mesh_intersection_warp
+            print(f"Warp: ray_mesh_intersection_warp kernel loaded (local_rank {os.getenv('LOCAL_RANK')})")
 
 
 def points_to_mesh(points, mask, resolution=None):
@@ -716,6 +727,9 @@ def ray_triangle_intersection(
     Uses NVIDIA Warp acceleration for fast performance.
     """
     _init_warp()
-    return _ray_triangle_intersection_func(
+    # return _ray_triangle_intersection_func(
+    #     ray_origins, ray_directions, vertices, faces, device
+    # )
+    return _ray_mesh_intersection_func(
         ray_origins, ray_directions, vertices, faces, device
     )

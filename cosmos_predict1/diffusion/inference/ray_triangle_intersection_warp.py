@@ -106,6 +106,48 @@ def ray_triangle_intersection_kernel(
 
 
 @wp.kernel
+def mesh_query_ray_kernel(
+    mesh_id: wp.uint64,
+    ray_origins: wp.array2d(dtype=wp.float32),      # (H*W, 3)
+    ray_directions: wp.array2d(dtype=wp.float32),   # (H*W, 3)
+    depth_map: wp.array(dtype=wp.float32),          # (H*W,)
+):
+    """
+    Warp kernel for ray-triangle intersection using Möller–Trumbore algorithm.
+    Each thread processes one ray against all triangles.
+    """
+    # Get thread index (ray index)
+    ray_idx = wp.tid()
+    
+    # Get ray origin and direction
+    ray_origin = wp.vec3(
+        ray_origins[ray_idx, 0],
+        ray_origins[ray_idx, 1],
+        ray_origins[ray_idx, 2]
+    )
+    ray_dir = wp.vec3(
+        ray_directions[ray_idx, 0],
+        ray_directions[ray_idx, 1],
+        ray_directions[ray_idx, 2]
+    )
+    
+    # Initialize minimum distance
+    t = wp.float32(0.0)  # hit distance along ray
+    u = wp.float32(0.0)  # hit face barycentric u
+    v = wp.float32(0.0)  # hit face barycentric v
+    s = wp.float32(0.0)  # hit face sign
+    n = wp.vec3()  # hit face normal
+    f = wp.int32(0)  # hit face index
+
+    hit = wp.mesh_query_ray(mesh_id, ray_origin, ray_dir, wp.float32(1e10), t, u, v, s, n, f)
+
+    if hit and s > 0:
+        depth_map[ray_idx] = t
+    else:
+        depth_map[ray_idx] = 0.0
+
+
+@wp.kernel
 def ray_triangle_intersection_tiled_kernel(
     ray_origins: wp.array2d(dtype=wp.float32),      # (H*W, 3)
     ray_directions: wp.array2d(dtype=wp.float32),   # (H*W, 3)
@@ -189,6 +231,76 @@ def ray_triangle_intersection_tiled_kernel(
     # Write result using atomic min to handle concurrent updates
     if min_t < 1e10:
         wp.atomic_min(depth_map, ray_idx, min_t)
+
+
+def ray_mesh_intersection_warp(
+    ray_origins: torch.Tensor,      # (H, W, 3)
+    ray_directions: torch.Tensor,   # (H, W, 3)
+    vertices: torch.Tensor,         # (N, 3)
+    faces: torch.Tensor,            # (M, 3)
+    device: torch.device
+) -> torch.Tensor:
+    """
+    Compute ray-triangle intersections using NVIDIA Warp for maximum GPU acceleration.
+    
+    This implementation uses Warp kernels to achieve the best possible performance
+    on NVIDIA GPUs by:
+    1. Using native CUDA kernels through Warp
+    2. Tiling triangles for better memory access patterns
+    3. Using atomic operations for concurrent updates
+    4. Minimizing memory transfers
+    
+    Args:
+        ray_origins: (H, W, 3) ray origins in camera space
+        ray_directions: (H, W, 3) ray directions (should be normalized)
+        vertices: (N, 3) mesh vertices
+        faces: (M, 3) triangle face indices
+        device: torch device (must be CUDA)
+    
+    Returns:
+        depth_map: (H, W) depth values, 0 where no intersection
+    """
+    H, W = ray_origins.shape[:2]
+    num_rays = H * W
+    num_triangles = faces.shape[0]
+    
+    # Reshape rays to 2D arrays
+    ray_origins_flat = ray_origins.reshape(-1, 3).contiguous()
+    ray_directions_flat = ray_directions.reshape(-1, 3).contiguous()
+    
+    # Convert PyTorch tensors to Warp arrays (as float arrays, not vec3)
+    wp_ray_origins = wp.from_torch(ray_origins_flat, dtype=wp.float32)
+    wp_ray_directions = wp.from_torch(ray_directions_flat, dtype=wp.float32)
+    wp_vertices = wp.from_torch(vertices.contiguous(), dtype=wp.vec3)
+    #wp_faces = wp.from_torch(faces.int().contiguous(), dtype=wp.int32)
+    wp_indices = wp.from_torch(faces.int().reshape(-1).contiguous(), dtype=wp.int32)
+    # Convert mesh to Warp mesh
+    wp_mesh = wp.Mesh(points=wp_vertices, indices=wp_indices)
+
+    # Create output depth map
+    depth_map_flat = torch.zeros(num_rays, device=device, dtype=torch.float32)
+    wp_depth_map = wp.from_torch(depth_map_flat, dtype=wp.float32)
+    
+    # Choose implementation based on problem size
+    wp.launch(
+        kernel=mesh_query_ray_kernel,
+        dim=num_rays,
+        inputs=[
+            wp_mesh.id,
+            wp_ray_origins,
+            wp_ray_directions,
+            wp_depth_map,
+        ],
+        device=f"cuda:{device.index}" if device.index is not None else "cuda:0"
+    )
+    
+    # Synchronize to ensure kernel completion
+    wp.synchronize()
+    
+    # Reshape back to 2D
+    depth_map = depth_map_flat.reshape(H, W)
+    
+    return depth_map
 
 
 def ray_triangle_intersection_warp(
