@@ -21,7 +21,41 @@ from itertools import repeat
 import collections.abc
 from einops import rearrange
 
-from flash_attn import flash_attn_func
+# Optional: AMD aiter (requires building from source; provides module_aiter_enum and flash_attn_func).
+# If aiter is not available, we fall back to PyTorch scaled_dot_product_attention.
+_aiter_flash_attn = None
+
+def _get_flash_attn_func():
+    global _aiter_flash_attn
+    if _aiter_flash_attn is not None:
+        return _aiter_flash_attn
+    try:
+        import aiter
+        fn = partial(aiter.flash_attn_func, return_lse=True)
+        _aiter_flash_attn = lambda *args, **kwds: fn(*args, **kwds)[0]
+        return _aiter_flash_attn
+    except (ModuleNotFoundError, ImportError, AttributeError) as e:
+        if "module_aiter_enum" in str(e) or "aiter" in str(e).lower() or "flash_attn_func" in str(e):
+            import warnings
+            warnings.warn(
+                "aiter not available (e.g. missing module_aiter_enum from AMD aiter build). "
+                "Using PyTorch scaled_dot_product_attention as fallback."
+            )
+        # Fallback: PyTorch SDPA (uses FlashAttention on CUDA when available)
+        def _sdpa_flash_attn(q, k, v, **kwargs):
+            # q, k, v: (B, N, num_heads, head_dim) -> SDPA wants (B, num_heads, N, head_dim)
+            q = q.transpose(1, 2)
+            k = k.transpose(1, 2)
+            v = v.transpose(1, 2)
+            out = torch.nn.functional.scaled_dot_product_attention(
+                q, k, v, dropout_p=0.0, is_causal=False
+            )
+            return out.transpose(1, 2)  # (B, N, num_heads, head_dim)
+        _aiter_flash_attn = _sdpa_flash_attn
+        return _aiter_flash_attn
+
+def flash_attn_func(*args, **kwds):
+    return _get_flash_attn_func()(*args, **kwds)
 
 try:
     # Needed since changing args to function causes recompiles

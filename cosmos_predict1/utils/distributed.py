@@ -24,13 +24,13 @@ from contextlib import contextmanager
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Callable, Container, Optional
 
-import pynvml
+#import pynvml
 import torch
 import torch.distributed as dist
 from torch.distributed import get_process_group_ranks
 
 from cosmos_predict1.utils import log
-from cosmos_predict1.utils.device import Device
+#from cosmos_predict1.utils.device import Device
 
 if TYPE_CHECKING:
     from cosmos_predict1.utils.config import DDPConfig
@@ -45,13 +45,34 @@ try:
 except ImportError:
     print("Megatron-core is not installed.")
 
+def _set_device_limit():
+    try:
+        if torch.cuda.is_available():
+            # Check if we're on HIP/ROCm (PyTorch uses "cuda" for both)
+            is_hip = hasattr(torch.version, 'hip') and torch.version.hip is not None
+            if is_hip:
+                _libhip = ctypes.CDLL("libamdhip64.so")
+                p_value = ctypes.cast((ctypes.c_size_t * 1)(), ctypes.POINTER(ctypes.c_size_t))
+                # Limit 0x05 may not be supported on HIP - wrap in try/except
+                try:
+                    _libhip.hipDeviceSetLimit(ctypes.c_int(0x05), ctypes.c_size_t(128))
+                    _libhip.hipDeviceGetLimit(p_value, ctypes.c_int(0x05))
+                except Exception:
+                    pass  # Unsupported on AMD, skip
+            else:
+                _libcudart = ctypes.CDLL("libcudart.so")
+                p_value = ctypes.cast((ctypes.c_int * 1)(), ctypes.POINTER(ctypes.c_int))
+                _libcudart.cudaDeviceSetLimit(ctypes.c_int(0x05), ctypes.c_int(128))
+                _libcudart.cudaDeviceGetLimit(p_value, ctypes.c_int(0x05))
+    except OSError:
+        pass  # Library not found
 
 def init() -> int | None:
     """Initialize distributed training."""
     # Set GPU affinity.
-    pynvml.nvmlInit()
+    #pynvml.nvmlInit()
     local_rank = int(os.getenv("LOCAL_RANK", 0))
-    device = Device(local_rank)
+    #device = Device(local_rank)
     # os.sched_setaffinity(0, device.get_cpu_affinity())
     # Set up NCCL communication.
     os.environ["TORCH_NCCL_BLOCKING_WAIT"] = "0"
@@ -70,11 +91,7 @@ def init() -> int | None:
             rank0_only=False,
         )
     # Increase the L2 fetch granularity for faster speed.
-    _libcudart = ctypes.CDLL("libcudart.so")
-    # Set device limit on the current device.
-    p_value = ctypes.cast((ctypes.c_int * 1)(), ctypes.POINTER(ctypes.c_int))
-    _libcudart.cudaDeviceSetLimit(ctypes.c_int(0x05), ctypes.c_int(128))
-    _libcudart.cudaDeviceGetLimit(p_value, ctypes.c_int(0x05))
+    _set_device_limit()
     log.info(f"Running with {get_world_size()} GPUs.")
 
 

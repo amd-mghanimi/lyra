@@ -20,7 +20,9 @@ import torch
 from megatron.core import ModelParallelConfig, parallel_state
 from torch import nn
 from torch.distributed import _functional_collectives as funcol
-from transformer_engine.pytorch.attention import _SplitAlongDim, apply_rotary_pos_emb, check_set_window_size
+from transformer_engine.pytorch.attention.rope import apply_rotary_pos_emb
+from transformer_engine.pytorch.attention.dot_product_attention.utils import check_set_window_size
+from transformer_engine.pytorch.utils import SplitAlongDim
 from transformer_engine.pytorch.constants import AttnBiasTypes
 from transformer_engine.pytorch.float8_tensor import Float8Tensor
 from transformer_engine.pytorch.module.linear import Linear as LinearTE
@@ -511,7 +513,7 @@ def enable_qk_normalization_in_te_mha(
 
             #  [sq, b, (np/ng + 2), ng, hn]
             #  --> [sq, b, np/ng, np, hn], [sq, b, 1, ng, hn], [sq, b, 1, ng, hn]
-            query_layer, key_layer, value_layer = _SplitAlongDim.apply(
+            query_layer, key_layer, value_layer = SplitAlongDim.apply(
                 mixed_x_layer, split_dim, (num_queries_per_key_value, 1, 1)
             )
             # query: -> [sq, b, np, hn]
@@ -535,7 +537,7 @@ def enable_qk_normalization_in_te_mha(
             mixed_kv_layer = mixed_kv_layer.view(*new_tensor_shape)
 
             # mixed_kv_layer --> 2 [sk, b, ng, hn]
-            key_layer, value_layer = _SplitAlongDim.apply(
+            key_layer, value_layer = SplitAlongDim.apply(
                 mixed_kv_layer,
                 split_dim,
                 mixed_kv_layer.shape[split_dim] // 2,
